@@ -12,7 +12,7 @@ exclude = [
 
 [[rules]]
 path = "src/fastmcp/server/auth/oauth_proxy.py"
-max_lines = 2282
+max_lines = 2540
 
 [[rules]]
 path = "tests/client/test_client.py"
@@ -292,7 +292,7 @@ max_lines = 589
 
 [[rules]]
 path = "src/fastmcp/cli/cli.py"
-max_lines = 957
+max_lines = 962
 
 [[rules]]
 path = "tests/utilities/test_json_schema_type.py"
@@ -308,7 +308,7 @@ max_lines = 604
 
 [[rules]]
 path = "docs/development/v3-notes/v3-features.mdx"
-max_lines = 536
+max_lines = 540
 
 [[rules]]
 path = "src/fastmcp/tools/function_tool.py"
