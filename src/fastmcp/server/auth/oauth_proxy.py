@@ -272,6 +272,8 @@ def create_consent_html(
     server_website_url: str | None = None,
     client_website_url: str | None = None,
     csp_policy: str | None = None,
+    is_cimd_client: bool = False,
+    cimd_domain: str | None = None,
 ) -> str:
     """Create a styled HTML consent page for OAuth authorization requests.
 
@@ -280,6 +282,8 @@ def create_consent_html(
             If None, uses the built-in CSP policy with appropriate directives.
             If empty string "", disables CSP entirely (no meta tag is rendered).
             If a non-empty string, uses that as the CSP policy value.
+        is_cimd_client: Whether this is a CIMD client (URL-based client_id)
+        cimd_domain: The verified domain for CIMD clients
     """
     import html as html_module
 
@@ -293,8 +297,26 @@ def create_consent_html(
     else:
         server_display = server_name_escaped
 
+    # Build verification badge
+    if is_cimd_client and cimd_domain:
+        domain_escaped = html_module.escape(cimd_domain)
+        verification_badge = f"""
+            <div class="verification-badge verified">
+                <span class="badge-icon">✓</span>
+                <span class="badge-text">Verified: <strong>{domain_escaped}</strong></span>
+            </div>
+        """
+    else:
+        verification_badge = """
+            <div class="verification-badge unverified">
+                <span class="badge-icon">⚠</span>
+                <span class="badge-text">Unverified client</span>
+            </div>
+        """
+
     # Build intro box with call-to-action
     intro_box = f"""
+        {verification_badge}
         <div class="info-box">
             <p>The application <strong>{client_display}</strong> wants to access the MCP server <strong>{server_display}</strong>. Please ensure you recognize the callback address below.</p>
         </div>
@@ -391,6 +413,36 @@ def create_consent_html(
         {help_link}
     """
 
+    # Verification badge styles
+    verification_badge_styles = """
+        .verification-badge {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 12px 20px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 14px;
+        }
+        .verification-badge.verified {
+            background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+            border: 1px solid #28a745;
+            color: #155724;
+        }
+        .verification-badge.unverified {
+            background: linear-gradient(135deg, #fff3cd 0%, #ffeeba 100%);
+            border: 1px solid #ffc107;
+            color: #856404;
+        }
+        .verification-badge .badge-icon {
+            font-size: 18px;
+        }
+        .verification-badge .badge-text strong {
+            font-weight: 600;
+        }
+    """
+
     # Additional styles needed for this page
     additional_styles = (
         INFO_BOX_STYLES
@@ -399,6 +451,7 @@ def create_consent_html(
         + DETAIL_BOX_STYLES
         + BUTTON_STYLES
         + TOOLTIP_STYLES
+        + verification_badge_styles
     )
 
     # Determine CSP policy to use
@@ -2327,6 +2380,22 @@ class OAuthProxy(OAuthProvider):
                 status_code=302,
             )
 
+        # Check if this is a trusted CIMD domain that can skip consent
+        if self._enable_cimd:
+            cimd_domain = self._cimd_fetcher.get_domain(txn["client_id"])
+            if (
+                cimd_domain
+                and self._cimd_trust_policy.auto_approve_trusted
+                and self._cimd_trust_policy.is_trusted(cimd_domain)
+            ):
+                logger.info(
+                    "Auto-approving trusted CIMD client: %s (domain: %s)",
+                    txn["client_id"],
+                    cimd_domain,
+                )
+                upstream_url = self._build_upstream_authorize_url(txn_id, txn)
+                return RedirectResponse(url=upstream_url, status_code=302)
+
         # Need consent: issue CSRF token and show HTML
         csrf_token = secrets.token_urlsafe(32)
         csrf_expires_at = time.time() + 15 * 60
@@ -2342,9 +2411,13 @@ class OAuthProxy(OAuthProvider):
         txn["csrf_token"] = csrf_token
         txn["csrf_expires_at"] = csrf_expires_at
 
-        # Load client to get client_name if available
+        # Load client to get client_name and CIMD info if available
         client = await self.get_client(txn["client_id"])
         client_name = getattr(client, "client_name", None) if client else None
+
+        # Check if this is a CIMD client
+        is_cimd_client = hasattr(client, "_cimd_document") and client._cimd_document is not None  # type: ignore[union-attr]
+        cimd_domain = self._cimd_fetcher.get_domain(txn["client_id"]) if is_cimd_client else None
 
         # Extract server metadata from app state
         fastmcp = getattr(request.app.state, "fastmcp_server", None)
@@ -2370,6 +2443,8 @@ class OAuthProxy(OAuthProvider):
             server_icon_url=server_icon_url,
             server_website_url=server_website_url,
             csp_policy=self._consent_csp_policy,
+            is_cimd_client=is_cimd_client,
+            cimd_domain=cimd_domain,
         )
         response = create_secure_html_response(html)
         # Store CSRF in cookie with short lifetime
