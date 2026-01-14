@@ -30,6 +30,7 @@ from fastmcp.server.dependencies import (
 )
 from fastmcp.server.tasks.config import TaskConfig
 from fastmcp.tools.tool import AuthCheckCallable
+from fastmcp.utilities.async_utils import call_sync_fn_in_threadpool
 from fastmcp.utilities.json_schema import compress_schema
 from fastmcp.utilities.logging import get_logger
 from fastmcp.utilities.types import get_cached_typeadapter
@@ -159,7 +160,7 @@ class FunctionPrompt(Prompt):
             fn = fn.__call__
         # if the fn is a staticmethod, we need to work with the underlying function
         if isinstance(fn, staticmethod):
-            fn = fn.__func__  # type: ignore[assignment]
+            fn = fn.__func__
 
         # Transform Context type annotations to Depends() for unified DI
         fn = transform_context_annotations(fn)
@@ -293,9 +294,14 @@ class FunctionPrompt(Prompt):
 
             # self.fn is wrapped by without_injected_parameters which handles
             # dependency resolution internally
-            result = self.fn(**kwargs)
-            if inspect.isawaitable(result):
-                result = await result
+            if inspect.iscoroutinefunction(self.fn):
+                result = await self.fn(**kwargs)
+            else:
+                # Run sync functions in threadpool to avoid blocking the event loop
+                result = await call_sync_fn_in_threadpool(self.fn, **kwargs)
+                # Handle sync wrappers that return awaitables (e.g., partial(async_fn))
+                if inspect.isawaitable(result):
+                    result = await result
 
             return self.convert_result(result)
         except Exception as e:
@@ -310,7 +316,7 @@ class FunctionPrompt(Prompt):
         """
         if not self.task_config.supports_tasks():
             return
-        docket.register(self.fn, names=[self.key])  # type: ignore[arg-type]
+        docket.register(self.fn, names=[self.key])
 
     async def add_to_docket(  # type: ignore[override]
         self,
@@ -418,7 +424,7 @@ def prompt(
             auth=auth,
         )
         target = fn.__func__ if hasattr(fn, "__func__") else fn
-        target.__fastmcp__ = metadata  # type: ignore[attr-defined]
+        target.__fastmcp__ = metadata
         return fn
 
     def decorator(fn: F, prompt_name: str | None) -> F:

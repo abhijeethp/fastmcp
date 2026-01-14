@@ -93,7 +93,7 @@ def match_uri_template(uri: str, uri_template: str) -> dict[str, str] | None:
         for name in query_param_names:
             if name in parsed_query:
                 # Take first value if multiple provided
-                params[name] = parsed_query[name][0]  # type: ignore[index]
+                params[name] = parsed_query[name][0]
 
     return params
 
@@ -314,6 +314,12 @@ class ResourceTemplate(FastMCPComponent):
         if task_key:
             kwargs["key"] = task_key
         return await docket.add(lookup_key, **kwargs)(params)
+
+    def get_span_attributes(self) -> dict[str, Any]:
+        return super().get_span_attributes() | {
+            "fastmcp.component.type": "resource_template",
+            "fastmcp.provider.type": "LocalProvider",
+        }
 
 
 class FunctionResourceTemplate(ResourceTemplate):

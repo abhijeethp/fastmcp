@@ -1556,7 +1556,7 @@ class OAuthProxy(OAuthProvider):
 
         try:
             logger.debug("Refreshing upstream token (jti=%s)", refresh_jti[:8])
-            token_response: dict[str, Any] = await oauth_client.refresh_token(  # type: ignore[assignment]
+            token_response: dict[str, Any] = await oauth_client.refresh_token(
                 url=self._upstream_token_endpoint,
                 refresh_token=upstream_token_set.refresh_token,
                 scope=" ".join(upstream_scopes) if upstream_scopes else None,
@@ -2033,7 +2033,7 @@ class OAuthProxy(OAuthProvider):
 
                 idp_tokens: dict[str, Any] = await oauth_client.fetch_token(
                     **token_params
-                )  # type: ignore[assignment]
+                )
 
                 logger.debug(
                     f"Successfully exchanged IdP code for tokens (transaction: {txn_id}, PKCE: {bool(proxy_code_verifier)})"
