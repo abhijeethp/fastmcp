@@ -1,0 +1,303 @@
+---
+title: Dependencies
+sidebarTitle: Dependencies
+description: Inject HTTP requests, access tokens, and custom values into your MCP functions.
+icon: syringe
+---
+import { VersionBadge } from '/snippets/version-badge.mdx'
+
+FastMCP uses [Docket](https://github.com/chrisguidry/docket)'s dependency injection system to provide runtime values to your tools, resources, and prompts. Dependencies let you access HTTP request data, authentication tokens, database connections, and any other values your functions need—without passing them through every layer of your code.
+
+Dependency parameters are automatically excluded from the MCP schema, so clients never see them as callable parameters. This separation keeps your function signatures clean while giving you access to the runtime context you need.
+
+## HTTP Requests
+
+<VersionBadge version="2.2.11" />
+
+When running over HTTP transports (SSE or Streamable HTTP), you often need access to the underlying HTTP request for headers, client information, or other request metadata. The `get_http_request()` function retrieves the current Starlette request from anywhere within your request handling code.
+
+```python
+from fastmcp import FastMCP
+from fastmcp.server.dependencies import get_http_request
+from starlette.requests import Request
+
+mcp = FastMCP(name="HTTP Request Demo")
+
+@mcp.tool
+async def user_agent_info() -> dict:
+    """Return information about the user agent."""
+    request: Request = get_http_request()
+
+    user_agent = request.headers.get("user-agent", "Unknown")
+    client_ip = request.client.host if request.client else "Unknown"
+
+    return {
+        "user_agent": user_agent,
+        "client_ip": client_ip,
+        "path": request.url.path,
+    }
+```
+
+This approach works anywhere within a request's execution flow—in your MCP function, in helper functions it calls, or in middleware. The request is retrieved from context variables, so you don't need to thread it through every function call.
+
+<Note>
+`get_http_request()` raises a `RuntimeError` when called outside an HTTP request context, such as when running over STDIO transport. Use `get_http_headers()` if you need graceful fallback behavior.
+</Note>
+
+## HTTP Headers
+
+<VersionBadge version="2.2.11" />
+
+When you only need request headers and want to avoid errors in non-HTTP contexts, use `get_http_headers()`. This function returns an empty dictionary when no HTTP request is available, making it safe to use in code that might run over any transport.
+
+```python
+from fastmcp import FastMCP
+from fastmcp.server.dependencies import get_http_headers
+
+mcp = FastMCP(name="Headers Demo")
+
+@mcp.tool
+async def safe_header_info() -> dict:
+    """Safely get header information without raising errors."""
+    headers = get_http_headers()
+
+    auth_header = headers.get("authorization", "")
+    is_bearer = auth_header.startswith("Bearer ")
+
+    return {
+        "user_agent": headers.get("user-agent", "Unknown"),
+        "content_type": headers.get("content-type", "Unknown"),
+        "has_auth": bool(auth_header),
+        "auth_type": "Bearer" if is_bearer else "Other" if auth_header else "None",
+        "headers_count": len(headers)
+    }
+```
+
+By default, `get_http_headers()` excludes headers that could cause issues if forwarded or logged, such as `host` and `content-length`. To include all headers, pass `include_all=True`.
+
+## Access Tokens
+
+<VersionBadge version="2.11.0" />
+
+When your server uses authentication, you'll often need to identify the authenticated user or check their permissions. FastMCP provides several ways to access token information, from simple claim extraction to full token objects.
+
+### CurrentAccessToken
+
+<VersionBadge version="3.0.0" />
+
+The `CurrentAccessToken` dependency provides the complete `AccessToken` object for the authenticated request. Use it when you need access to multiple token properties like scopes, expiration, or the full claims dictionary.
+
+```python
+from fastmcp import FastMCP
+from fastmcp.server.dependencies import CurrentAccessToken
+from fastmcp.server.auth import AccessToken
+
+mcp = FastMCP(name="Auth Token Demo")
+
+@mcp.tool
+async def get_user_info(token: AccessToken = CurrentAccessToken) -> dict:
+    """Get information about the authenticated user."""
+    return {
+        "client_id": token.client_id,
+        "scopes": token.scopes,
+        "expires_at": token.expires_at,
+        "claims": token.claims,
+    }
+```
+
+The `AccessToken` object provides:
+
+- **`client_id`**: The OAuth client identifier
+- **`scopes`**: List of granted permission scopes
+- **`expires_at`**: Token expiration timestamp (if available)
+- **`claims`**: Dictionary of all token claims (JWT claims or provider-specific user info)
+
+Note that `CurrentAccessToken` is used without parentheses—it's a pre-instantiated dependency, not a factory function.
+
+<Warning>
+`CurrentAccessToken` raises a `RuntimeError` if no authenticated user is present. Use it only in tools that require authentication, or use `get_access_token()` when you need to handle unauthenticated requests gracefully.
+</Warning>
+
+### TokenClaim
+
+<VersionBadge version="3.0.0" />
+
+When you need just one specific value from the token—like a user ID or tenant identifier—`TokenClaim` extracts it directly. This keeps your function signatures expressive and avoids boilerplate claim-extraction code.
+
+```python
+from fastmcp import FastMCP
+from fastmcp.server.dependencies import TokenClaim
+
+mcp = FastMCP(name="Claim Extraction Demo")
+
+@mcp.tool
+async def add_expense(
+    amount: float,
+    user_id: str = TokenClaim("oid"),  # Azure object ID
+) -> dict:
+    """Add an expense for the authenticated user."""
+    await db.insert({"user_id": user_id, "amount": amount})
+    return {"status": "created", "user_id": user_id}
+```
+
+`TokenClaim` takes the claim name as an argument and returns its value as a string. If the claim doesn't exist in the token, it raises a `RuntimeError` that lists available claims to help with debugging.
+
+Common claims vary by identity provider:
+
+| Provider | User ID Claim | Email Claim | Name Claim |
+|----------|--------------|-------------|------------|
+| Azure/Entra | `oid` | `email` | `name` |
+| GitHub | `sub` | `email` | `name` |
+| Google | `sub` | `email` | `name` |
+| Auth0 | `sub` | `email` | `name` |
+
+### get_access_token()
+
+For code that needs to work both with and without authentication, or when you need token access deep in helper functions, use `get_access_token()`. Unlike `CurrentAccessToken`, this function returns `None` when no token is available rather than raising an error.
+
+```python
+from fastmcp import FastMCP
+from fastmcp.server.dependencies import get_access_token
+from fastmcp.server.auth import AccessToken
+
+mcp = FastMCP(name="Optional Auth Demo")
+
+@mcp.tool
+async def get_user_info() -> dict:
+    """Get user info, handling both authenticated and anonymous requests."""
+    token: AccessToken | None = get_access_token()
+
+    if token is None:
+        return {"authenticated": False}
+
+    return {
+        "authenticated": True,
+        "client_id": token.client_id,
+        "scopes": token.scopes,
+        "expires_at": token.expires_at,
+        "token_claims": token.claims,
+    }
+```
+
+### Working with Token Claims
+
+The `claims` dictionary contains all data from the original token. For JWT tokens, this includes standard claims like `sub` (subject), `iss` (issuer), and `exp` (expiration), plus any custom claims from your identity provider. For OAuth providers like Azure or GitHub, it includes user profile information returned by the provider's userinfo endpoint.
+
+```python
+from fastmcp import FastMCP
+from fastmcp.server.dependencies import CurrentAccessToken
+from fastmcp.server.auth import AccessToken
+
+mcp = FastMCP(name="Multi-tenant Demo")
+
+@mcp.tool
+async def get_tenant_data(
+    resource_id: str,
+    token: AccessToken = CurrentAccessToken,
+) -> dict:
+    """Get tenant-specific data using token claims."""
+    tenant_id = token.claims.get("tenant_id")
+    user_id = token.claims.get("sub")
+
+    if not tenant_id:
+        raise ValueError("No tenant information in token")
+
+    return {
+        "resource_id": resource_id,
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "data": f"Tenant-specific data for {tenant_id}",
+    }
+```
+
+## Custom Dependencies
+
+<VersionBadge version="2.14" />
+
+Beyond the built-in dependencies, you can create your own to inject configuration, database connections, API clients, or any other values your functions need. Custom dependencies use the same injection mechanism as `CurrentContext()` and `CurrentAccessToken`.
+
+### Using Depends()
+
+The `Depends()` function wraps any callable—sync or async—and injects its return value into your function. This is the simplest way to create reusable dependencies.
+
+```python
+from fastmcp import FastMCP
+from fastmcp.dependencies import Depends
+
+mcp = FastMCP(name="Custom Deps Demo")
+
+def get_config() -> dict:
+    return {"api_url": "https://api.example.com", "timeout": 30}
+
+async def get_user_id() -> int:
+    return 42
+
+@mcp.tool
+async def fetch_data(
+    query: str,
+    config: dict = Depends(get_config),
+    user_id: int = Depends(get_user_id),
+) -> str:
+    return f"User {user_id} fetching '{query}' from {config['api_url']}"
+```
+
+Dependencies declared with `Depends()` are excluded from the MCP schema—clients see `fetch_data` as taking only a `query` parameter.
+
+### Resource Management
+
+For dependencies that acquire resources needing cleanup—database connections, file handles, HTTP clients—use an async context manager. The cleanup code runs after your function completes, even if an error occurs.
+
+```python
+from contextlib import asynccontextmanager
+from fastmcp import FastMCP
+from fastmcp.dependencies import Depends
+
+mcp = FastMCP(name="Resource Demo")
+
+@asynccontextmanager
+async def get_database():
+    db = await connect_to_database()
+    try:
+        yield db
+    finally:
+        await db.close()
+
+@mcp.tool
+async def query_users(sql: str, db = Depends(get_database)) -> list:
+    return await db.execute(sql)
+```
+
+The database connection is established before your function runs and closed afterward, regardless of whether the function succeeds or raises an exception.
+
+### Nested Dependencies
+
+Dependencies can depend on other dependencies, letting you build complex dependency graphs from simple, reusable pieces.
+
+```python
+from fastmcp import FastMCP
+from fastmcp.dependencies import Depends
+
+mcp = FastMCP(name="Nested Demo")
+
+def get_base_url() -> str:
+    return "https://api.example.com"
+
+def get_api_client(base_url: str = Depends(get_base_url)) -> dict:
+    return {"base_url": base_url, "version": "v1"}
+
+@mcp.tool
+async def call_api(endpoint: str, client: dict = Depends(get_api_client)) -> str:
+    return f"Calling {client['base_url']}/{client['version']}/{endpoint}"
+```
+
+Docket resolves the dependency graph automatically: when `call_api` is invoked, it first calls `get_base_url()`, passes the result to `get_api_client()`, and finally passes that client to your function.
+
+### Advanced: Subclassing Dependency
+
+For dependencies with complex lifecycle requirements or that need access to Docket's execution context, you can subclass Docket's `Dependency` class directly. This gives you full control over how the dependency is resolved and cleaned up.
+
+See the [Docket documentation on dependencies](https://chrisguidry.github.io/docket/dependencies/) for details on advanced patterns like scoped dependencies, lazy evaluation, and custom resolution logic.
+
+## Context as a Dependency
+
+The [Context](/servers/context) object—which provides logging, progress reporting, resource access, and other MCP capabilities—is itself accessed through dependencies. See [Accessing the Context](/servers/context#accessing-the-context) for the three ways to get context in your functions: `CurrentContext()`, type-hint injection, and `get_context()`.

@@ -122,6 +122,7 @@
                 "pages": [
                   "servers/authorization",
                   "servers/context",
+                  "servers/dependencies",
                   "servers/elicitation",
                   "servers/icons",
                   "servers/lifespan",
