@@ -312,19 +312,8 @@ def create_streamable_http_app(
         "stateless": stateless_http,
     }
 
-    # Pass session_idle_timeout if the MCP SDK supports it (>= 1.27.0)
     if session_idle_timeout is not None:
-        import inspect
-
-        sig = inspect.signature(StreamableHTTPSessionManager.__init__)
-        if "session_idle_timeout" in sig.parameters:
-            session_manager_kwargs["session_idle_timeout"] = session_idle_timeout
-        else:
-            logger.warning(
-                "session_idle_timeout was specified but the installed version of "
-                "the MCP SDK does not support it. Upgrade to mcp >= 1.27.0 to "
-                "enable idle session cleanup."
-            )
+        session_manager_kwargs["session_idle_timeout"] = session_idle_timeout
 
     session_manager = StreamableHTTPSessionManager(**session_manager_kwargs)
 

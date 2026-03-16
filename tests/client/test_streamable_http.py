@@ -1,5 +1,4 @@
 import asyncio
-import inspect
 import json
 import sys
 from contextlib import suppress
@@ -7,7 +6,6 @@ from unittest.mock import AsyncMock, call
 
 import pytest
 from mcp import McpError
-from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import TextResourceContents
 
 from fastmcp import Context
@@ -293,13 +291,6 @@ class TestTimeout:
                 await client.call_tool("sleep", {"seconds": 0.2}, timeout=0.1)
 
 
-# Check if the installed MCP SDK supports session_idle_timeout
-_sdk_supports_idle_timeout = (
-    "session_idle_timeout"
-    in inspect.signature(StreamableHTTPSessionManager.__init__).parameters
-)
-
-
 class TestSessionIdleTimeout:
     async def test_session_idle_timeout_parameter_threads_through(self):
         """session_idle_timeout should be accepted by http_app() without errors."""
@@ -342,29 +333,6 @@ class TestSessionIdleTimeout:
         finally:
             fastmcp.settings.session_idle_timeout = original
 
-    async def test_session_idle_timeout_warns_on_unsupported_sdk(self, caplog):
-        """Should log a warning when SDK doesn't support session_idle_timeout."""
-        if _sdk_supports_idle_timeout:
-            pytest.skip(
-                "MCP SDK supports session_idle_timeout; warning test not applicable"
-            )
-
-        import logging
-
-        with caplog.at_level(logging.WARNING):
-            server = create_test_server()
-            server.http_app(session_idle_timeout=30.0)
-
-        assert any(
-            "session_idle_timeout" in record.message
-            and "does not support" in record.message
-            for record in caplog.records
-        )
-
-    @pytest.mark.skipif(
-        not _sdk_supports_idle_timeout,
-        reason="MCP SDK does not yet support session_idle_timeout",
-    )
     async def test_session_idle_timeout_cleans_up_idle_sessions(self):
         """Sessions should be cleaned up after the idle timeout expires."""
         import httpx
